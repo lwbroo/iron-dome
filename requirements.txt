@@ -6,3 +6,5 @@ google-genai
 streamlit-autorefresh
 scikit-learn
 plotly
+feedparser
+requests
