@@ -5,276 +5,160 @@ import numpy as np
 import google.genai as genai
 from streamlit_autorefresh import st_autorefresh
 from datetime import datetime
+import feedparser
+import requests
 from sklearn.linear_model import LinearRegression
 import plotly.graph_objects as go
 
 # ==========================================
 # ⚙️ 系統設定 & 自動更新
 # ==========================================
-st.set_page_config(page_title="鐵穹戰略指揮中心", layout="wide", page_icon="🛡️")
+st.set_page_config(page_title="鐵穹預言機", layout="wide", page_icon="🛡️")
+st_autorefresh(interval=300000, key="datarefresh") # 5分鐘自動重整
 
-# 設定每 5 分鐘 (300,000 毫秒) 自動刷新一次
-st_autorefresh(interval=300000, key="datarefresh")
-
-# 🎨 UI 美化 (深色戰情室風格)
+# 🎨 UI 美化 (行動裝置優化)
 st.markdown("""
 <style>
-    .stApp { background-color: #0f172a; color: #e2e8f0; }
-    .stButton button { width: 100%; border-radius: 8px; font-weight: bold; }
+    .stApp { background-color: #0d1117; color: #c9d1d9; }
+    .metric-card { background-color: #161b22; padding: 15px; border-radius: 10px; border: 1px solid #30363d; }
+    @media (max-width: 600px) { .stButton button { height: 50px; font-size: 18px; } }
 </style>
 """, unsafe_allow_html=True)
 
-st.title("🛡️ 鐵穹防禦系統 (終極戰略版)")
-st.caption(f"⚡ 系統自動監控中 | 最後更新: {datetime.now().strftime('%H:%M:%S')} | 下次更新：5分鐘後")
-
-# 📝 股票名稱對照 (包含您的主動型ETF與黃金)
-STOCK_MAP = {
-    "GC=F": "🔥 國際黃金 (期貨)",
-    "00635U": "元大S&P黃金",
-    "00985A": "野村台灣50",
-    "00981A": "統一台股增長",
-    "00982A": "群益台灣強棒",
-    "0052": "富邦科技",
-    "2330": "台積電",
-    "00878": "國泰永續高股息",
-    "0050": "元大台灣50",
-    "2884": "玉山金",
-    "3711": "日月光投控"
-}
-
-# --- 側邊欄設定 ---
-with st.sidebar:
-    st.header("⚙️ 指揮官設定")
-    api_key = st.text_input("Gemini API Key", type="password")
-    
-    st.subheader("📊 1. 我的庫存 (防禦區)")
-    # 載入您的完整投資組合
-    my_portfolio = "GC=F, 00635U, 00985A, 00981A, 00982A, 0052, 2330, 00878, 0050, 2884, 3711"
-    stock_input = st.text_area("持股清單", my_portfolio, height=150)
-    
-    st.subheader("🚀 2. 飆股掃描池 (獵殺區)")
-    # 預設一些熱門權值股作為掃描範例
-    default_scanner = "2317, 2454, 2382, 3231, 2603, 3324, 1519, 3017, 2376, 2303"
-    scanner_pool = st.text_area("輸入想掃描的潛力股", default_scanner, height=100)
-
 # ==========================================
-# 🔧 核心資料抓取與計算
+# 📡 外部功能函數 (新聞、LINE、美股)
 # ==========================================
-def get_technical_data(ticker):
-    ticker = ticker.strip()
-    
-    if ticker == "GC=F":
-        symbol = "GC=F"
-    elif ticker == "00635U":
-        symbol = "00635U.TW"
-    elif ticker.isdigit():
-        symbol = f"{ticker}.TW"
-    else:
-        symbol = ticker
 
-    stock = yf.Ticker(symbol)
+def get_financial_news():
+    """抓取 Google News 財經新聞 RSS"""
+    url = "https://news.google.com/rss/search?q=台股+財經+時事&hl=zh-TW&gl=TW&ceid=TW:zh-Hant"
+    feed = feedparser.parse(url)
+    news_items = [f"{item.title}" for item in feed.entries[:8]]
+    return news_items
+
+def send_line_notify(token, msg):
+    """發送 LINE Notify 訊息"""
+    url = "https://notify-api.line.me/api/notify"
+    headers = {"Authorization": "Bearer " + token}
+    payload = {"message": msg}
     try:
-        # 抓 3 個月資料供回歸預測使用
-        hist = stock.history(period="3mo")
-        if hist.empty and symbol.endswith(".TW"):
-            symbol = symbol.replace(".TW", ".TWO")
-            stock = yf.Ticker(symbol)
-            hist = stock.history(period="3mo")
-            
-        if hist.empty or len(hist) < 20: 
-            return None # 資料不足
-            
-        price = hist['Close'].iloc[-1]
-        prev_price = hist['Close'].iloc[-2]
-        change_pct = (price - prev_price) / prev_price * 100
-        
-        ma5 = hist['Close'].rolling(5).mean().iloc[-1]
-        ma20 = hist['Close'].rolling(20).mean().iloc[-1]
-        
-        vol = hist['Volume'].iloc[-1]
-        vol_ma5 = hist['Volume'].rolling(5).mean().iloc[-1]
-        
-        # RSI
-        delta = hist['Close'].diff()
-        gain = (delta.where(delta > 0, 0)).rolling(14).mean()
-        loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
-        rs = gain / loss
-        rsi = 100 - (100 / (1 + rs))
-        curr_rsi = rsi.iloc[-1]
-
-        # 狀態判斷
-        if price < ma5 and curr_rsi < 45:
-            status = "🔴 弱勢破線"
-        elif price > ma5 and price > ma20:
-            status = "🟢 強勢多頭"
-        else:
-            status = "🟡 盤整"
-
-        return {
-            "symbol": symbol,
-            "代號": ticker,
-            "名稱": STOCK_MAP.get(ticker, ticker),
-            "現價": price,
-            "漲跌幅": change_pct,
-            "MA5": ma5,
-            "MA20": ma20,
-            "Vol": vol,
-            "Vol_MA5": vol_ma5,
-            "RSI": curr_rsi,
-            "狀態": status,
-            "hist_data": hist # 保留歷史資料供畫圖
-        }
-    except Exception as e:
+        r = requests.post(url, headers=headers, params=payload)
+        return r.status_code
+    except:
         return None
 
+def get_us_pulse():
+    """監控美股先行指標"""
+    tickers = {"TSM": "台積電ADR", "^SOX": "費城半導體", "^IXIC": "那斯達克"}
+    pulse = {}
+    for ticker, name in tickers.items():
+        try:
+            d = yf.Ticker(ticker).history(period="2d")
+            change = (d['Close'].iloc[-1] - d['Close'].iloc[-2]) / d['Close'].iloc[-2] * 100
+            pulse[name] = change
+        except: pulse[name] = 0
+    return pulse
+
 # ==========================================
-# 🛡️ 模組 1：持股防禦監控 (Iron Dome)
+# 🔧 核心技術指標計算 (強化版)
 # ==========================================
-st.subheader("📊 我的資產戰略儀表板")
+def get_advanced_tech(ticker):
+    ticker = ticker.strip()
+    symbol = f"{ticker}.TW" if ticker.isdigit() else ticker
+    try:
+        stock = yf.Ticker(symbol)
+        hist = stock.history(period="6mo")
+        if hist.empty: hist = yf.Ticker(symbol.replace(".TW", ".TWO")).history(period="6mo")
+        if len(hist) < 30: return None
 
-portfolio_tickers = [t.strip() for t in stock_input.split(",")]
-portfolio_data = []
-alert_stocks = []
+        close = hist['Close']
+        # 1. 均線 & RSI
+        ma20 = close.rolling(20).mean().iloc[-1]
+        delta = close.diff()
+        gain = (delta.where(delta > 0, 0)).rolling(14).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
+        rsi = 100 - (100 / (1 + gain/loss)).iloc[-1]
 
-scan_bar = st.progress(0, text="正在掃描投資組合...")
-for i, t in enumerate(portfolio_tickers):
-    scan_bar.progress((i + 1) / len(portfolio_tickers))
-    if data := get_technical_data(t):
-        if "🔴" in data['狀態'] and "黃金" not in data['名稱']:
-            alert_stocks.append(f"{data['名稱']} ({data['代號']})")
-        
-        portfolio_data.append({
-            "代號": data['代號'],
-            "名稱": data['名稱'],
-            "現價": f"{data['現價']:.2f}",
-            "漲跌幅%": f"{data['漲跌幅']:.2f}%",
-            "MA5": f"{data['MA5']:.2f}",
-            "MA20": f"{data['MA20']:.2f}",
-            "RSI": f"{data['RSI']:.1f}",
-            "狀態": data['狀態']
-        })
-scan_bar.empty()
+        # 2. 布林通道
+        std = close.rolling(20).std().iloc[-1]
+        upper_bb = ma20 + (std * 2)
 
-# 空襲警報
-if alert_stocks:
-    st.error(f"⚠️ 空襲警報：以下持股跌破防線且動能弱勢，建議立即檢視！\n\n" + " | ".join(alert_stocks))
+        # 3. MACD
+        exp1 = close.ewm(span=12, adjust=False).mean()
+        exp2 = close.ewm(span=26, adjust=False).mean()
+        macd = exp1 - exp2
+        signal = macd.ewm(span=9, adjust=False).mean()
+        hist_macd = macd.iloc[-1] - signal.iloc[-1]
 
-if portfolio_data:
-    df_port = pd.DataFrame(portfolio_data)
-    def highlight_row(row):
-        if "🔴" in row['狀態']: return ['background-color: #450a0a; color: #fca5a5'] * len(row)
-        elif "🟢" in row['狀態']: return ['background-color: #064e3b; color: #6ee7b7'] * len(row)
-        elif "黃金" in row['名稱']: return ['background-color: #422006; color: #fcd34d; font-weight: bold'] * len(row)
-        return [''] * len(row)
+        return {
+            "name": ticker, "price": close.iloc[-1], "chg": (close.iloc[-1]/close.iloc[-2]-1)*100,
+            "ma20": ma20, "rsi": rsi, "upper_bb": upper_bb, "macd_h": hist_macd,
+            "vol_ratio": hist['Volume'].iloc[-1] / hist['Volume'].rolling(5).mean().iloc[-1],
+            "raw_hist": hist
+        }
+    except: return None
+
+# ==========================================
+# 🏰 介面佈局
+# ==========================================
+with st.sidebar:
+    st.header("🛡️ 指揮官核心設定")
+    api_key = st.text_input("Gemini API Key", type="password")
+    line_token = st.text_input("LINE Notify Token", type="password")
     
-    st.dataframe(df_port.style.apply(highlight_row, axis=1), use_container_width=True, hide_index=True)
+    st.divider()
+    my_stocks = st.text_area("📋 監控清單", "2330, 2454, 3711, 0052, GC=F, 00635U", height=100)
+    hunt_stocks = st.text_area("🚀 獵殺池 (前300大)", "2317, 2382, 3324, 1519, 2603, 3017", height=100)
 
-st.divider()
+# --- 1. 全球戰情快報 ---
+st.subheader("🌍 全球戰情預警 (美股連動)")
+pulse_data = get_us_pulse()
+cols = st.columns(len(pulse_data))
+crash_signal = False
+for i, (name, chg) in enumerate(pulse_data.items()):
+    color = "red" if chg < -2 else "green" if chg > 0 else "white"
+    cols[i].markdown(f"**{name}**\n<h3 style='color:{color}'>{chg:.2f}%</h3>", unsafe_allow_html=True)
+    if chg < -2.5: crash_signal = True
 
-# ==========================================
-# 🚀 模組 2：AI 飆股獵殺 (Funnel Scanner)
-# ==========================================
-st.subheader("🚀 潛力飆股雷達 (AI 深度分析)")
+if crash_signal:
+    st.error("⚠️ 偵測到美股顯著下跌，台股開盤有大跌風險！已準備發送預警訊息。")
+    if line_token:
+        send_line_notify(line_token, f"🚨 預警：美股重挫，TSM ADR/費半跌幅過大，請注意台股開盤風險！")
 
-if st.button("啟動 AI 獵殺掃描", type="primary"):
-    if not api_key:
-        st.warning("⚠️ 請先輸入 Gemini API Key")
+# --- 2. 持股監控 ---
+st.subheader("🛡️ 持股防禦狀態")
+p_list = [t.strip() for t in my_stocks.split(",")]
+p_results = []
+for t in p_list:
+    if d := get_advanced_tech(t):
+        status = "⚠️ 破線危險" if d['price'] < d['ma20'] else "✅ 趨勢安全"
+        p_results.append({"代號": t, "現價": round(d['price'],2), "漲跌%": round(d['chg'],2), "RSI": round(d['rsi'],1), "狀態": status})
+        if "危險" in status and line_token:
+            send_line_notify(line_token, f"🛡️ 鐵穹提醒：您的持股 {t} 已跌破月線，請檢視部位！")
+st.table(pd.DataFrame(p_results))
+
+# --- 3. AI 獵殺掃描 (新聞整合) ---
+st.subheader("🚀 AI 獵殺與新聞分析")
+if st.button("啟動 AI 綜合獵殺評估"):
+    if not api_key: st.error("請輸入 API Key")
     else:
-        scanner_tickers = [t.strip() for t in scanner_pool.split(",") if t.strip()]
-        candidates = []
+        news = get_financial_news()
+        st.write("📰 **前夜關鍵新聞摘要：**")
+        for n in news[:3]: st.write(f"- {n}")
         
-        filter_bar = st.progress(0, text="Step 1: 正在進行數學技術面過濾...")
-        for i, t in enumerate(scanner_tickers):
-            filter_bar.progress((i + 1) / len(scanner_tickers))
-            if d := get_technical_data(t):
-                # 獵殺條件：價格大於月線，成交量大於5日均量，RSI大於50
-                if d['現價'] > d['MA20'] and d['Vol'] > d['Vol_MA5'] * 1.2 and d['RSI'] > 50:
+        candidates = []
+        for t in [x.strip() for x in hunt_stocks.split(",")]:
+            if d := get_advanced_tech(t):
+                # 獵殺條件：爆量 + 突破布林上軌 + MACD紅柱
+                if d['vol_ratio'] > 1.3 and d['price'] > d['ma20'] and d['macd_h'] > 0:
                     candidates.append(d)
         
-        filter_bar.empty()
-        
         if candidates:
-            st.success(f"✅ 發現 {len(candidates)} 檔具備量價齊揚潛力的標的！AI 正在解讀...")
-            cols = st.columns(min(len(candidates), 3))
             client = genai.Client(api_key=api_key)
-            
-            for i, stock in enumerate(candidates):
-                with cols[i % 3]:
-                    st.info(f"**{stock['名稱']} ({stock['代號']})**\n\n現價: {stock['現價']:.2f} | RSI: {stock['RSI']:.1f}")
-                    with st.spinner("AI 運算中..."):
-                        try:
-                            prompt = f"分析台股 {stock['名稱']}。剛站上月線且爆出近期大量，RSI為 {stock['RSI']:.1f}。判斷是有效突破還是假突破？並給出未來3天操作規劃。100字內。"
-                            response = client.models.generate_content(model='gemini-2.0-flash-exp', contents=prompt)
-                            st.write(response.text)
-                        except Exception as e:
-                            try:
-                                response = client.models.generate_content(model='gemini-1.5-flash', contents=prompt)
-                                st.write(response.text)
-                            except:
-                                st.error("AI 連線失敗")
+            st.success(f"發現 {len(candidates)} 檔突破標的！AI 分析中...")
+            for c in candidates:
+                prompt = f"綜合考量新聞：{news[:5]}。分析台股 {c['name']}，現價 {c['price']} 已帶量突破技術面。請評估今日盤勢風險，並給出這檔標的的操作建議 (100字內)。"
+                response = client.models.generate_content(model='gemini-2.0-flash', contents=prompt)
+                st.info(f"**{c['name']} 戰略建議：**\n{response.text}")
         else:
-            st.warning("目前掃描池內沒有符合突破條件的標的。")
-
-st.divider()
-
-# ==========================================
-# 📈 模組 3：機器學習回歸預測 (Regression)
-# ==========================================
-st.subheader("📈 機器學習趨勢預測 (5日推演)")
-
-# 從現有的投資組合中提取有抓到歷史資料的標的
-valid_stocks = {t.strip(): get_technical_data(t.strip()) for t in stock_input.split(",")}
-valid_options = {k: v for k, v in valid_stocks.items() if v is not None}
-
-if valid_options:
-    pred_options = [f"{k} {v['名稱']}" for k, v in valid_options.items()]
-    selected_pred = st.selectbox("選擇預測標的：", pred_options)
-    
-    if st.button("執行回歸模型"):
-        code = selected_pred.split(" ")[0]
-        data = valid_options[code]
-        hist_df = data['hist_data'].tail(60) # 取最近 60 天
-        
-        # 準備回歸資料
-        y = hist_df['Close'].values
-        X = np.arange(len(y)).reshape(-1, 1)
-        
-        # 訓練模型
-        model = LinearRegression()
-        model.fit(X, y)
-        
-        # 預測未來 5 天
-        future_X = np.arange(len(y), len(y) + 5).reshape(-1, 1)
-        future_y = model.predict(future_X)
-        
-        # 繪圖
-        fig = go.Figure()
-        
-        # 歷史真實股價
-        fig.add_trace(go.Scatter(
-            x=list(range(len(y))), y=y, 
-            mode='lines', name='實際收盤價', line=dict(color='#3b82f6', width=2)
-        ))
-        
-        # 回歸趨勢線
-        trendline = model.predict(X)
-        fig.add_trace(go.Scatter(
-            x=list(range(len(y))), y=trendline, 
-            mode='lines', name='AI 趨勢線', line=dict(color='#ef4444', width=2, dash='dash')
-        ))
-        
-        # 未來預測點
-        fig.add_trace(go.Scatter(
-            x=list(range(len(y), len(y) + 5)), y=future_y, 
-            mode='markers+lines', name='未來 5 日預測', marker=dict(color='#10b981', size=8)
-        ))
-        
-        fig.update_layout(
-            title=f"{data['名稱']} ({code}) - 60日線性回歸預測",
-            xaxis_title="時間 (天)", yaxis_title="股價",
-            template="plotly_dark", height=400,
-            hovermode="x unified"
-        )
-        st.plotly_chart(fig, use_container_width=True)
-        
-        st.info(f"💡 **AI 模型預測結論**：根據過去 60 天的線性回歸趨勢，預估 5 天後的目標價約落在 **{future_y[-1]:.2f}** 左右。")
+            st.warning("目前獵殺池未發現符合「強勢突破」之標的。")
