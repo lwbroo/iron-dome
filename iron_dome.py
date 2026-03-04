@@ -12,25 +12,38 @@ import requests
 # ⚙️ 系統設定 & 自動更新
 # ==========================================
 st.set_page_config(page_title="鐵穹預言機 2026", layout="wide", page_icon="🛡️")
-st_autorefresh(interval=300000, key="datarefresh") # 5分鐘自動刷新
+st_autorefresh(interval=300000, key="datarefresh")
 
 # 🎨 UI 美化
 st.markdown("""
 <style>
     .stApp { background-color: #0d1117; color: #c9d1d9; }
-    .metric-card { background-color: #161b22; padding: 15px; border-radius: 10px; border: 1px solid #30363d; }
+    .metric-card { background-color: #161b22; padding: 15px; border-radius: 10px; border: 1px solid #30363d; margin-bottom: 10px; }
     h3 { color: #58a6ff; }
+    .stButton button { width: 100%; background-color: #238636; color: white; height: 50px; font-weight: bold; }
 </style>
 """, unsafe_allow_html=True)
 
 # ==========================================
-# 📡 核心功能函數 (新聞、LINE、美股、技術指標)
+# 📖 台股名稱對照表 (核心擴展)
 # ==========================================
-def get_financial_news():
-    url = "https://news.google.com/rss/search?q=台股+財經&hl=zh-TW&gl=TW&ceid=TW:zh-Hant"
-    feed = feedparser.parse(url)
-    return [item.title for item in feed.entries[:8]]
+STOCK_NAMES = {
+    "2330": "台積電", "2317": "鴻海", "2454": "聯發科", "2382": "廣達", "2412": "中華電",
+    "2308": "台達電", "3711": "日月光", "2303": "聯電", "6669": "緯穎", "3231": "緯創",
+    "2881": "富邦金", "2882": "國泰金", "2891": "中信金", "2886": "兆豐金", "2884": "玉山金",
+    "2885": "元大金", "5880": "合庫金", "2892": "第一金", "2880": "華南金", "2890": "永豐金",
+    "2603": "長榮", "2609": "陽明", "2615": "萬海", "2618": "長榮航", "2610": "華航",
+    "3017": "奇鋐", "3324": "雙鴻", "2376": "技嘉", "2357": "華碩", "1519": "華城",
+    "0050": "元大台灣50", "0052": "富邦科技", "00878": "國泰高股息", "0056": "元大高股息",
+    "GC=F": "🔥 國際黃金", "00635U": "元大黃金", "TSM": "台積電ADR"
+}
 
+def get_name(ticker):
+    return STOCK_NAMES.get(ticker.strip(), ticker.strip())
+
+# ==========================================
+# 📡 功能函數
+# ==========================================
 def send_line_push(access_token, user_id, message):
     if not access_token or not user_id: return None
     url = "https://api.line.me/v2/bot/message/push"
@@ -52,10 +65,15 @@ def get_us_pulse():
         except: pulse[name] = 0
     return pulse
 
-def get_advanced_tech(ticker):
-    ticker = ticker.strip()
-    symbol = f"{ticker}.TW" if ticker.isdigit() else ticker
-    if ticker == "GC=F": symbol = "GC=F"
+def get_financial_news():
+    url = "https://news.google.com/rss/search?q=台股+財經&hl=zh-TW&gl=TW&ceid=TW:zh-Hant"
+    feed = feedparser.parse(url)
+    return [item.title for item in feed.entries[:8]]
+
+def get_tech_data(ticker):
+    t = ticker.strip()
+    symbol = f"{t}.TW" if t.isdigit() else t
+    if t == "GC=F": symbol = "GC=F"
     try:
         stock = yf.Ticker(symbol)
         hist = stock.history(period="6mo")
@@ -68,99 +86,73 @@ def get_advanced_tech(ticker):
         gain = (delta.where(delta > 0, 0)).rolling(14).mean()
         loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
         rsi = 100 - (100 / (1 + gain.iloc[-1]/loss.iloc[-1]))
-        std = close.rolling(20).std().iloc[-1]
-        upper_bb = ma20 + (std * 2)
-        exp1 = close.ewm(span=12, adjust=False).mean()
-        exp2 = close.ewm(span=26, adjust=False).mean()
-        macd_h = (exp1 - exp2).iloc[-1] - (exp1 - exp2).ewm(span=9, adjust=False).mean().iloc[-1]
+        macd_h = (close.ewm(span=12).mean() - close.ewm(span=26).mean()).iloc[-1]
         vol_ratio = hist['Volume'].iloc[-1] / hist['Volume'].rolling(5).mean().iloc[-1]
-        return {"name": ticker, "price": close.iloc[-1], "chg": (close.iloc[-1]/close.iloc[-2]-1)*100, 
-                "ma20": ma20, "rsi": rsi, "upper_bb": upper_bb, "macd_h": macd_h, "vol_ratio": vol_ratio}
+        return {"name": get_name(t), "code": t, "price": close.iloc[-1], "chg": (close.iloc[-1]/close.iloc[-2]-1)*100, 
+                "ma20": ma20, "rsi": rsi, "macd_h": macd_h, "vol_ratio": vol_ratio}
     except: return None
 
 # ==========================================
-# 🏰 側邊欄設定區
+# 🏰 側邊欄
 # ==========================================
 with st.sidebar:
     st.header("🛡️ 指揮官核心設定")
     api_key = st.text_input("Gemini API Key", type="password")
-    
-    st.subheader("🤖 LINE 機器人設定")
     line_token = st.text_input("Channel Access Token", type="password")
     line_user_id = st.text_input("Your User ID (U...)")
     
-    if st.button("測試 LINE 連線"):
-        status = send_line_push(line_token, line_user_id, "🚀 鐵穹系統：連線測試成功！")
-        if status == 200: st.success("發送成功！")
-        else: st.error(f"錯誤代碼: {status}")
-
     st.divider()
     my_stocks = st.text_area("📋 監控清單", "2330, 2454, 3711, 0052, GC=F, 2603")
-    hunt_pool = st.text_area("🚀 獵殺池 (輸入想掃描的代號)", 
-"2330, 2317, 2454, 2382, 2412, 2308, 3711, 2303, 6669, 3231, 2881, 2882, 2891, 2886, 2884, 2885, 5880, 2892, 2880, 2890, 5876, 2883, 2887, 2801, 2834, 6505, 1303, 1301, 1326, 2002, 1216, 2207, 2912, 1101, 1102, 1402, 2105, 9910, 1503, 1504, 1605, 1476, 1229, 2059, 2603, 2609, 2615, 2618, 2610, 2357, 2376, 2377, 2353, 2395, 2324, 2356, 2301, 4938, 2385, 2449, 6239, 2474, 3034, 2379, 3661, 3443, 3035, 3529, 5269, 6415, 2458, 8299, 2408, 2344, 3008, 2409, 3481, 2345, 3036, 3702, 3045, 4904, 5388, 2327, 3037, 8046, 3044, 2368, 2383, 6274, 3017, 3324, 3533, 3653, 2360, 4958, 6409", 
-height=150)
+    # 預設百大清單
+    default_hunt = "2330, 2317, 2454, 2382, 2412, 2308, 3711, 2303, 6669, 3231, 2881, 2882, 2891, 2886, 2884, 2885, 2603, 2609, 2618, 3017, 3324, 1519"
+    hunt_pool = st.text_area("🚀 獵殺池", default_hunt, height=150)
 
 # ==========================================
-# 📡 戰情室主畫面
+# 📡 戰情室畫面
 # ==========================================
-st.title("🛡️ 鐵穹戰略預言機")
+st.title("🛡️ 鐵穹預言機 2026")
 
-# --- 1. 全球戰情 ---
-st.subheader("🌍 全球戰情預警 (美股連動)")
+# 1. 全球戰情
 pulse = get_us_pulse()
 cols = st.columns(3)
 for i, (name, chg) in enumerate(pulse.items()):
     color = "#ff4b4b" if chg < -2 else "#00ff00" if chg > 0 else "white"
-    cols[i].markdown(f"**{name}**\n<h2 style='color:{color}'>{chg:.2f}%</h2>", unsafe_allow_html=True)
+    cols[i].markdown(f"<div class='metric-card'><b>{name}</b><br><h2 style='color:{color}; margin:0;'>{chg:.2f}%</h2></div>", unsafe_allow_html=True)
 
-if pulse.get("台積電ADR", 0) < -3.0:
-    st.error("🚨 警告：台積電ADR重挫，今日台股開盤有系統性風險！")
-
-# --- 2. 持股監控 ---
-st.subheader("🛡️ 持股防禦狀態")
+# 2. 持股防禦 (含中文名稱)
+st.subheader("📊 持股防禦狀態")
 p_results = []
 for t in [x.strip() for x in my_stocks.split(",")]:
-    if d := get_advanced_tech(t):
+    if d := get_tech_data(t):
         status = "⚠️ 破線" if d['price'] < d['ma20'] else "✅ 安全"
-        p_results.append({"代號": t, "現價": f"{d['price']:.2f}", "漲跌%": f"{d['chg']:.2f}%", "RSI": f"{d['rsi']:.1f}", "狀態": status})
+        p_results.append({"名稱": d['name'], "代號": d['code'], "現價": f"{d['price']:.2f}", "漲跌%": f"{d['chg']:.2f}%", "狀態": status})
 st.table(pd.DataFrame(p_results))
 
-# --- 3. AI 獵殺按鈕 (最重要的部分) ---
+# 3. AI 獵殺 (含進度條與新聞)
 st.divider()
-st.subheader("🚀 AI 綜合獵殺評估 (技術+新聞)")
-
-if st.button("啟動 AI 獵殺評估", type="primary"):
-    if not api_key:
-        st.warning("⚠️ 請先輸入 Gemini API Key")
+st.subheader("🚀 AI 綜合獵殺評估")
+if st.button("啟動 AI 獵殺掃描", type="primary"):
+    if not api_key: st.warning("請輸入 API Key")
     else:
-        # A. 抓新聞
         news = get_financial_news()
-        st.write("📰 **最新財經動態：**")
+        st.write("📰 **最新財經摘要：**")
         for n in news[:3]: st.write(f"- {n}")
         
-        # B. 技術面過濾
         candidates = []
-        scan_bar = st.progress(0, text="正在掃描獵殺池...")
-        hunt_list = [x.strip() for x in hunt_pool.split(",")]
-        for i, t in enumerate(hunt_list):
-            scan_bar.progress((i + 1) / len(hunt_list))
-            if d := get_advanced_tech(t):
-                # 獵殺條件：爆量 + 站上月線 + MACD紅柱
-                if d['vol_ratio'] > 1.2 and d['price'] > d['ma20'] and d['macd_h'] > 0:
+        scan_bar = st.progress(0, text="正在掃描全市場標的...")
+        h_list = [x.strip() for x in hunt_pool.split(",") if x.strip()]
+        for i, t in enumerate(h_list):
+            scan_bar.progress((i + 1) / len(h_list))
+            if d := get_tech_data(t):
+                if d['vol_ratio'] > 1.2 and d['price'] > d['ma20']:
                     candidates.append(d)
         scan_bar.empty()
         
-        # C. AI 深度解讀
         if candidates:
-            st.success(f"✅ 發現 {len(candidates)} 檔具備攻擊潛力標的！AI 正在整合新聞進行解讀...")
             client = genai.Client(api_key=api_key)
             for c in candidates:
-                with st.expander(f"📊 分析報告：{c['name']}", expanded=True):
-                    prompt = f"分析台股 {c['name']}。技術面：現價 {c['price']:.2f} 帶量突破月線，MACD轉正。參考新聞：{news[:5]}。請結合今日市場氣氛與技術面，給出這檔股票的短線(3天)操作建議。100字內。"
-                    try:
-                        response = client.models.generate_content(model='gemini-2.0-flash', contents=prompt)
-                        st.info(response.text)
-                    except:
-                        st.error("AI 運算失敗，請檢查 API Key 或稍後再試。")
-        else:
-            st.warning("目前獵殺池內未發現符合『強勢突破』條件之標的。")
+                with st.expander(f"📈 {c['name']} ({c['code']}) - 戰略解讀", expanded=True):
+                    prompt = f"分析台股 {c['name']} ({c['code']})。技術面：帶量站上月線。參考新聞：{news[:5]}。請給出3天內的操作建議，100字內。"
+                    response = client.models.generate_content(model='gemini-2.0-flash', contents=prompt)
+                    st.info(response.text)
+        else: st.warning("目前獵殺池未發現強勢標的。")
