@@ -3,8 +3,8 @@ yfinance
 pandas
 numpy
 google-genai
-streamlit-autorefresh
-scikit-learn
-plotly
 feedparser
 requests
+scikit-learn
+plotly
+streamlit-autorefresh
