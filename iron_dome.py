@@ -37,7 +37,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# 📖 核心標正名字典 (已永久存入您的 12 檔戰力)
+# 📖 核心標正名字典
 STOCK_NAMES = {
     "2330": "台積電", "0052": "富邦科技", "006208": "富邦台50", "4958": "臻鼎-KY",
     "4420": "光明", "00919": "群益精選高息", "0056": "元大高股息", "6683": "雍智科技",
@@ -54,6 +54,19 @@ def get_name(t, stock_info=None):
 # ==========================================
 # 📡 核心分析函數
 # ==========================================
+def send_line_push(token, uid, msg):
+    """將警報推送到指揮官的手機"""
+    if not token or not uid or token == "" or uid == "": 
+        return None
+    url = "https://api.line.me/v2/bot/message/push"
+    headers = {"Content-Type": "application/json", "Authorization": f"Bearer {token}"}
+    payload = {"to": uid, "messages": [{"type": "text", "text": msg}]}
+    try: 
+        res = requests.post(url, headers=headers, json=payload, timeout=5)
+        return res.status_code
+    except: 
+        return 500
+
 def get_tech_data(ticker):
     t = ticker.strip().upper()
     if not t: return None
@@ -87,37 +100,58 @@ def get_tech_data(ticker):
 # ==========================================
 # 🏰 戰情室介面
 # ==========================================
-st.title("🏛️ 股票戰情監控中心 (永久編制版)")
+st.title("🏛️ 股票戰情監控中心 (通訊強化版)")
 
 with st.sidebar:
     st.header("📈 戰情設定")
     if st.button("🔄 立即刷新戰情"): st.rerun()
     st.divider()
     
-    api_key = st.text_input("Gemini API Key", value=st.secrets.get("GEMINI_API_KEY", ""), type="password")
-    
-    st.divider()
-    # 💥 重點：這裡已經將您的 12 檔股票永久設定為預設值
-    PERMANENT_LIST = "0052, 00981A, 2330, 006208, 4958, 4420, 00919, 009816, 0056, 6683, 1717, 00929"
-    my_stocks = st.text_area("📋 監控清單 (已存入預設值)", PERMANENT_LIST, height=150)
+    # 重新接回 LINE 設定線路
+    sec_gemini = st.secrets.get("GEMINI_API_KEY", "")
+    sec_line_t = st.secrets.get("LINE_CHANNEL_ACCESS_TOKEN", "")
+    sec_line_u = st.secrets.get("LINE_USER_ID", "")
 
-# --- 2. 持股防禦與配息監控 ---
+    api_key = st.text_input("Gemini API Key", value=sec_gemini, type="password")
+    line_token = st.text_input("LINE Token", value=sec_line_t, type="password")
+    line_uid = st.text_input("Your User ID", value=sec_line_u)
+
+    if st.button("🔔 測試 LINE 通訊"):
+        if line_token and line_uid:
+            res_code = send_line_push(line_token, line_uid, "🚀 戰情中心測試：通訊頻道已建立！")
+            if res_code == 200: st.success("發送成功！")
+            else: st.error(f"發送失敗，代碼: {res_code}")
+        else:
+            st.warning("請先輸入 LINE Token 與 UID")
+
+    st.divider()
+    PERMANENT_LIST = "0052, 00981A, 2330, 006208, 4958, 4420, 00919, 009816, 0056, 6683, 1717, 00929"
+    my_stocks = st.text_area("📋 監控清單", PERMANENT_LIST, height=150)
+
+# --- 1. 持股防禦與配息監控 (LINE 觸發邏輯在此) ---
 st.subheader("🛡️ 持股防禦與配息公告")
 current_list = [x.strip() for x in my_stocks.split(",") if x.strip()]
 p_data = [get_tech_data(t) for t in current_list if get_tech_data(t)]
 
 if p_data:
-    df = pd.DataFrame([
-        {
+    defense_rows = []
+    for d in p_data:
+        status = "✅ 安全"
+        if d['price'] < d['ma20']:
+            status = "⚠️ 破線危險"
+            # 💥 LINE 警報自動發送邏輯
+            if line_token and line_uid:
+                send_line_push(line_token, line_uid, f"🚨 戰情警報：您的持股 {d['name']} ({d['code']}) 目前價格 {d['price']:.2f} 已跌破月線 {d['ma20']:.2f}！")
+        
+        defense_rows.append({
             "名稱": d['name'], "代號": d['code'], "現價": f"{d['price']:.2f}", 
             "最新配息": f"${d['div']:.2f}", "除息日期": d['div_date'],
             "殖利率": f"{(d['div']/d['price']*100):.2f}%" if d['div'] > 0 else "N/A",
-            "狀態": "⚠️ 破線" if d['price'] < d['ma20'] else "✅ 安全"
-        } for d in p_data
-    ])
-    st.table(df)
+            "狀態": status
+        })
+    st.table(pd.DataFrame(defense_rows))
 
-# --- 3. 趨勢預測 ---
+# --- 2. 趨勢預測 ---
 st.divider()
 st.subheader("🔮 趨勢路徑預測")
 all_codes = sorted(list(set([d['code'] for d in p_data])))
