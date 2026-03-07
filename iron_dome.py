@@ -11,7 +11,7 @@ from sklearn.preprocessing import PolynomialFeatures
 # ==========================================
 # ⚙️ 系統設定 & 版本號
 # ==========================================
-VERSION = "v7.3.0"
+VERSION = "v7.3.1"
 APP_NAME = "股票戰情監控中心"
 
 st.set_page_config(page_title=APP_NAME, layout="wide", page_icon="📈")
@@ -66,13 +66,13 @@ def get_tech_data(ticker):
     if hist is None or hist.empty:
         return {"code": t, "name": STOCK_NAMES.get(t, t), "is_error": True}
 
-    # 💎 法說會日期
+    # 💎 法說會日期 (安全讀取)
     event_date_obj = None
     try:
         cal = stock_obj.calendar
         if cal is not None and 'Earnings Date' in cal:
             dates = cal['Earnings Date']
-            if isinstance(dates, list) and len(dates) > 0:
+            if isinstance(dates, (list, pd.DatetimeIndex)) and len(dates) > 0:
                 event_date_obj = dates[0]
     except: pass
 
@@ -107,7 +107,6 @@ with st.sidebar:
     if st.button("🔄 刷新全場雷達"): st.rerun()
     st.divider()
     
-    # LINE 設定
     line_token = st.text_input("LINE Token", value=st.secrets.get("LINE_CHANNEL_ACCESS_TOKEN", ""), type="password")
     line_uid = st.text_input("Your User ID", value=st.secrets.get("LINE_USER_ID", ""))
     
@@ -119,6 +118,7 @@ with st.sidebar:
         else: st.warning("請先設定 Token 與 ID")
 
     st.divider()
+    # 永久記憶名單
     PERMANENT_LIST = "2330, 0052, 006208, 4958, 4420, 00919, 009816, 0056, 6683, 1717, 00929, 00981A"
     my_stocks = st.text_area("📋 核心部隊 (永久記憶)", PERMANENT_LIST, height=180)
     
@@ -138,22 +138,37 @@ with st.spinner('📡 正在同步法說會日期與價格防禦線...'):
         data = get_tech_data(t)
         if data and not data.get("is_error"):
             p_data.append(data)
-            if data['price'] < data['ma20']: broken_list.append(f"• {data['name']} ({data['code']})")
-            if data['event_date']:
-                evt_date = data['event_date'].date()
-                if today <= evt_date <= warning_window:
-                    earnings_warning_list.append(f"• {data['name']} ({data['code']}): {evt_date.strftime('%m/%d')} 震盪預警")
+            # 1. 破線檢查
+            if data['price'] < data['ma20']:
+                broken_list.append(f"• {data['name']} ({data['code']})")
+            
+            # 2. 法說會預警檢查 (新增安全判斷)
+            if data.get('event_date') is not None:
+                # 確保轉換為 date 物件進行比較
+                try:
+                    evt_date = data['event_date'].date() if hasattr(data['event_date'], 'date') else data['event_date']
+                    if today <= evt_date <= warning_window:
+                        earnings_warning_list.append(f"• {data['name']} ({data['code']}): {evt_date.strftime('%m/%d')} 震盪預警")
+                except: pass
 
 # --- 顯示表格 ---
 st.subheader("🛡️ 持股防禦、配息與大震盪預警")
 if p_data:
     display_list = []
     for d in p_data:
-        evt_str = d['event_date'].strftime('%Y-%m-%d') if d['event_date'] else "待公布"
+        evt_str = "待公布"
         status = "✅ 安全"
-        if d['price'] < d['ma20']: status = "⚠️ 破線"
-        if d['event_date'] and today <= d['event_date'].date() <= warning_window:
-            status = f"🔥 震盪預警 ({status})"
+        
+        if d.get('event_date') is not None:
+            try:
+                evt_date = d['event_date'].date() if hasattr(d['event_date'], 'date') else d['event_date']
+                evt_str = evt_date.strftime('%Y-%m-%d')
+                if today <= evt_date <= warning_window:
+                    status = "🔥 震盪預警"
+            except: pass
+
+        if d['price'] < d['ma20']:
+            status = f"⚠️ 破線 ({status})" if "預警" in status else "⚠️ 破線"
 
         display_list.append({
             "名稱": d['name'], "代號": d['code'], "現價": f"{d['price']:.2f}", 
