@@ -9,9 +9,12 @@ from sklearn.linear_model import LinearRegression
 from sklearn.preprocessing import PolynomialFeatures
 
 # ==========================================
-# ⚙️ 系統設定
+# ⚙️ 系統設定 & 版本號
 # ==========================================
-st.set_page_config(page_title="股票戰情監控中心", layout="wide", page_icon="📈")
+VERSION = "v7.3.0"
+APP_NAME = "股票戰情監控中心"
+
+st.set_page_config(page_title=APP_NAME, layout="wide", page_icon="📈")
 
 # 🎨 UI 美化
 st.markdown("""
@@ -23,7 +26,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# 📖 12 檔核心部隊字典
+# 📖 12 檔核心部隊 (永久記憶清單)
 STOCK_NAMES = {
     "2330": "台積電", "0052": "富邦科技", "006208": "富邦台50", "4958": "臻鼎-KY",
     "4420": "光明", "00919": "群益精選高息", "0056": "元大高股息", "6683": "雍智科技",
@@ -32,25 +35,24 @@ STOCK_NAMES = {
 }
 
 # ==========================================
-# 📡 核心分析函數 (Yahoo 優先 + 法說會偵測)
+# 📡 核心分析函數
 # ==========================================
 def send_line_push(token, uid, msg):
     if not token or not uid: return None
     url = "https://api.line.me/v2/bot/message/push"
     headers = {"Content-Type": "application/json", "Authorization": f"Bearer {token}"}
     payload = {"to": uid, "messages": [{"type": "text", "text": msg}]}
-    try: return requests.post(url, headers=headers, json=payload, timeout=8).status_code
+    try: 
+        res = requests.post(url, headers=headers, json=payload, timeout=8)
+        return res.status_code
     except: return 500
 
 def get_tech_data(ticker):
     t = ticker.strip().upper()
     if not t: return None
-    
-    # 🕵️ 多重路徑偵測：解決上櫃股抓不到的問題
     suffixes = [".TW", ".TWO", ""]
     hist = None
     stock_obj = None
-    
     for s in suffixes:
         symbol = f"{t}{s}" if (t.isdigit() or "A" in t) else t
         if t == "GC=F": symbol = "GC=F"
@@ -61,25 +63,22 @@ def get_tech_data(ticker):
                 hist = temp_hist
                 break
         except: continue
-            
     if hist is None or hist.empty:
         return {"code": t, "name": STOCK_NAMES.get(t, t), "is_error": True}
 
-    # 💎 獲取法說會 (Earnings Date) 與 配息
-    next_event = "待公布"
+    # 💎 法說會日期
+    event_date_obj = None
     try:
         cal = stock_obj.calendar
-        # 偵測下一場法說會日期
         if cal is not None and 'Earnings Date' in cal:
-            event_dates = cal['Earnings Date']
-            if isinstance(event_dates, list) and len(event_dates) > 0:
-                next_event = event_dates[0].strftime('%Y-%m-%d')
+            dates = cal['Earnings Date']
+            if isinstance(dates, list) and len(dates) > 0:
+                event_date_obj = dates[0]
     except: pass
 
+    # 配息偵測
     div_data = stock_obj.dividends
     last_div = div_data.iloc[-1] if not div_data.empty else 0
-    
-    # 頻率偵測
     freq = "年配"
     if not div_data.empty:
         now_tz = pd.Timestamp.now(tz='UTC')
@@ -91,76 +90,88 @@ def get_tech_data(ticker):
 
     close = hist['Close']
     ma20 = close.rolling(20).mean().iloc[-1]
-    
     return {
         "name": STOCK_NAMES.get(t, t), "code": t, "price": close.iloc[-1], 
         "chg": (close.iloc[-1]/close.iloc[-2]-1)*100, "ma20": ma20, 
-        "div": last_div, "freq": freq, "event": next_event, "hist": hist, "is_error": False
+        "div": last_div, "freq": freq, "event_date": event_date_obj, 
+        "hist": hist, "is_error": False
     }
 
 # ==========================================
 # 🏰 戰情室主視覺
 # ==========================================
-st.title("🏛️ 股票戰情監控中心 (法說會與記憶強化版)")
+st.title(f"🏛️ {APP_NAME}")
 
 with st.sidebar:
-    st.header("📈 戰情監控設定")
+    st.header("📈 戰情設定")
     if st.button("🔄 刷新全場雷達"): st.rerun()
     st.divider()
+    
+    # LINE 設定
     line_token = st.text_input("LINE Token", value=st.secrets.get("LINE_CHANNEL_ACCESS_TOKEN", ""), type="password")
     line_uid = st.text_input("Your User ID", value=st.secrets.get("LINE_USER_ID", ""))
     
-    st.divider()
-    # 💥 指揮官的 12 檔永久記憶名單
-    PERMANENT_LIST = "2330, 0052, 006208, 4958, 4420, 00919, 009816, 0056, 6683, 1717, 00929, 00981A"
-    my_stocks = st.text_area("📋 核心部隊清單 (永久記憶)", PERMANENT_LIST, height=180)
+    if st.button("🔔 測試 LINE 通訊"):
+        if line_token and line_uid:
+            status = send_line_push(line_token, line_uid, f"🚀 {APP_NAME}測試：通訊頻道暢通！")
+            if status == 200: st.success("發送成功！")
+            else: st.error(f"發送失敗，代碼: {status}")
+        else: st.warning("請先設定 Token 與 ID")
 
-# --- 數據同步 ---
+    st.divider()
+    PERMANENT_LIST = "2330, 0052, 006208, 4958, 4420, 00919, 009816, 0056, 6683, 1717, 00929, 00981A"
+    my_stocks = st.text_area("📋 核心部隊 (永久記憶)", PERMANENT_LIST, height=180)
+    
+    st.divider()
+    st.caption(f"系統版本: {VERSION}")
+
+# --- 數據同步與預警 ---
+today = datetime.date.today()
+warning_window = today + datetime.timedelta(days=3)
 current_list = [x.strip() for x in my_stocks.split(",") if x.strip()]
 p_data = []
 broken_list = []
+earnings_warning_list = []
 
-with st.spinner('📡 正在從 Yahoo Finance 接收法說會與股價數據...'):
+with st.spinner('📡 正在同步法說會日期與價格防禦線...'):
     for t in current_list:
         data = get_tech_data(t)
-        if data:
+        if data and not data.get("is_error"):
             p_data.append(data)
-            if not data.get("is_error") and data['price'] < data['ma20']:
-                broken_list.append(f"• {data['name']} ({data['code']})")
+            if data['price'] < data['ma20']: broken_list.append(f"• {data['name']} ({data['code']})")
+            if data['event_date']:
+                evt_date = data['event_date'].date()
+                if today <= evt_date <= warning_window:
+                    earnings_warning_list.append(f"• {data['name']} ({data['code']}): {evt_date.strftime('%m/%d')} 震盪預警")
 
-# --- 顯示防禦表格 ---
-st.subheader("🛡️ 持股防禦、配息與法說會監控")
+# --- 顯示表格 ---
+st.subheader("🛡️ 持股防禦、配息與大震盪預警")
 if p_data:
-    df = pd.DataFrame([
-        {
-            "名稱": d['name'], "代號": d['code'], "現價": f"{d['price']:.2f}", 
-            "最新配息": f"${d['div']:.2f}", "配息頻率": d['freq'], 
-            "預計法說會": d['event'], # 💥 新增欄位
-            "狀態": "⚠️ 破線" if d['price'] < d['ma20'] else "✅ 安全"
-        } for d in p_data
-    ])
-    st.table(df)
+    display_list = []
+    for d in p_data:
+        evt_str = d['event_date'].strftime('%Y-%m-%d') if d['event_date'] else "待公布"
+        status = "✅ 安全"
+        if d['price'] < d['ma20']: status = "⚠️ 破線"
+        if d['event_date'] and today <= d['event_date'].date() <= warning_window:
+            status = f"🔥 震盪預警 ({status})"
 
-    # LINE 彙整通知
-    if broken_list and line_token and line_uid:
+        display_list.append({
+            "名稱": d['name'], "代號": d['code'], "現價": f"{d['price']:.2f}", 
+            "配息": f"${d['div']:.2f}", "頻率": d['freq'], "預計法說會": evt_str, "狀態": status
+        })
+    st.table(pd.DataFrame(display_list))
+
+    # LINE 整合通知
+    if (broken_list or earnings_warning_list) and line_token and line_uid:
         if "last_alert" not in st.session_state:
-            report = "🚨 戰情中心破線警報：\n" + "\n".join(broken_list)
+            report_lines = [f"【{APP_NAME} 日報】"]
+            if earnings_warning_list:
+                report_lines.append("\n📅 法說大震盪預警：")
+                report_lines.extend(earnings_warning_list)
+            if broken_list:
+                report_lines.append("\n🚨 跌破月線警報：")
+                report_lines.extend(broken_list)
+            
+            report = "\n".join(report_lines)
             if send_line_push(line_token, line_uid, report) == 200:
                 st.session_state["last_alert"] = report
-else:
-    st.warning("🔄 數據更新中，請確保網路暢通...")
-
-# --- 趨勢預測 ---
-st.divider()
-valid_codes = [d['code'] for d in p_data if not d.get("is_error")]
-if valid_codes:
-    target = st.selectbox("🔮 選擇預測目標", valid_codes)
-    d_plot = next(item for item in p_data if item["code"] == target)
-    y = d_plot['hist']['Close'].tail(20).values
-    X = np.arange(len(y)).reshape(-1, 1)
-    model = LinearRegression().fit(X, y)
-    future_y = model.predict(np.array([[len(y)], [len(y)+1], [len(y)+2]]))
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(y=y, name="實際價格", line=dict(color='#3b82f6', width=3)))
-    fig.add_trace(go.Scatter(x=[len(y)-1, len(y), len(y)+1], y=[y[-1]]+list(future_y), name="預測趨勢", line=dict(color='#ff00ff', dash='dash')))
-    st.plotly_chart(fig, use_container_width=True)
