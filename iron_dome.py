@@ -6,12 +6,11 @@ import plotly.graph_objects as go
 import requests
 import datetime
 from sklearn.linear_model import LinearRegression
-from sklearn.preprocessing import PolynomialFeatures
 
 # ==========================================
 # ⚙️ 系統設定 & 版本號
 # ==========================================
-VERSION = "v7.3.1"
+VERSION = "v7.4.0"
 APP_NAME = "股票戰情監控中心"
 
 st.set_page_config(page_title=APP_NAME, layout="wide", page_icon="📈")
@@ -21,6 +20,7 @@ st.markdown("""
 <style>
     .stApp { background-color: #0d1117; color: #c9d1d9; }
     .metric-card { background-color: #161b22; padding: 15px; border-radius: 10px; border: 1px solid #30363d; margin-bottom: 10px; }
+    .dividend-box { background-color: #1e2327; padding: 20px; border-radius: 10px; border-left: 5px solid #238636; margin: 10px 0; }
     h3 { color: #58a6ff; }
     .stButton button { width: 100%; background-color: #238636; color: white; height: 50px; font-weight: bold; border-radius: 8px; border: none; }
 </style>
@@ -44,6 +44,7 @@ def send_line_push(token, uid, msg):
     payload = {"to": uid, "messages": [{"type": "text", "text": msg}]}
     try: 
         res = requests.post(url, headers=headers, json=payload, timeout=8)
+        if res.status_code == 429: return "429 (流量過載)"
         return res.status_code
     except: return 500
 
@@ -66,7 +67,7 @@ def get_tech_data(ticker):
     if hist is None or hist.empty:
         return {"code": t, "name": STOCK_NAMES.get(t, t), "is_error": True}
 
-    # 💎 法說會日期 (安全讀取)
+    # 法說會日期
     event_date_obj = None
     try:
         cal = stock_obj.calendar
@@ -76,117 +77,118 @@ def get_tech_data(ticker):
                 event_date_obj = dates[0]
     except: pass
 
-    # 配息偵測
+    # 配息與頻率偵測
     div_data = stock_obj.dividends
     last_div = div_data.iloc[-1] if not div_data.empty else 0
-    freq = "年配"
+    freq_multiplier = 1 # 預設年配
+    freq_name = "年配"
+    
     if not div_data.empty:
         now_tz = pd.Timestamp.now(tz='UTC')
         if div_data.index.tz is None: div_data.index = div_data.index.tz_localize('UTC')
         count = len(div_data[div_data.index > (now_tz - pd.Timedelta(days=365))])
-        if count >= 10: freq = "月配"
-        elif 3 <= count <= 5: freq = "季配"
-        elif count == 2: freq = "半年配"
+        if count >= 10: 
+            freq_name, freq_multiplier = "月配", 12
+        elif 3 <= count <= 5: 
+            freq_name, freq_multiplier = "季配", 4
+        elif count == 2: 
+            freq_name, freq_multiplier = "半年配", 2
 
     close = hist['Close']
     ma20 = close.rolling(20).mean().iloc[-1]
     return {
         "name": STOCK_NAMES.get(t, t), "code": t, "price": close.iloc[-1], 
         "chg": (close.iloc[-1]/close.iloc[-2]-1)*100, "ma20": ma20, 
-        "div": last_div, "freq": freq, "event_date": event_date_obj, 
-        "hist": hist, "is_error": False
+        "div": last_div, "freq_name": freq_name, "multiplier": freq_multiplier,
+        "event_date": event_date_obj, "hist": hist, "is_error": False
     }
 
 # ==========================================
-# 🏰 戰情室主視覺
+# 🏰 戰情室介面
 # ==========================================
 st.title(f"🏛️ {APP_NAME}")
 
 with st.sidebar:
-    st.header("📈 戰情設定")
+    st.header("📈 戰情設定中心")
     if st.button("🔄 刷新全場雷達"): st.rerun()
     st.divider()
     
-    line_token = st.text_input("LINE Token", value=st.secrets.get("LINE_CHANNEL_ACCESS_TOKEN", ""), type="password")
-    line_uid = st.text_input("Your User ID", value=st.secrets.get("LINE_USER_ID", ""))
+    line_token = st.secrets.get("LINE_CHANNEL_ACCESS_TOKEN", "")
+    line_uid = st.secrets.get("LINE_USER_ID", "")
     
     if st.button("🔔 測試 LINE 通訊"):
         if line_token and line_uid:
-            status = send_line_push(line_token, line_uid, f"🚀 {APP_NAME}測試：通訊頻道暢通！")
+            status = send_line_push(line_token, line_uid, f"🚀 {APP_NAME} v{VERSION} 測試：通訊暢通！")
             if status == 200: st.success("發送成功！")
-            else: st.error(f"發送失敗，代碼: {status}")
-        else: st.warning("請先設定 Token 與 ID")
+            else: st.error(f"錯誤: {status}")
 
     st.divider()
-    # 永久記憶名單
     PERMANENT_LIST = "2330, 0052, 006208, 4958, 4420, 00919, 009816, 0056, 6683, 1717, 00929, 00981A"
-    my_stocks = st.text_area("📋 核心部隊 (永久記憶)", PERMANENT_LIST, height=180)
+    my_stocks = st.text_area("📋 核心監控名單", PERMANENT_LIST, height=130)
+    
+    # 💰 新增：持股張數輸入
+    st.subheader("💰 持股張數設定")
+    shares_input = st.text_area("依序輸入張數 (用逗號隔開)", "1,0,0,0,0,0,0,0,0,0,0,0", help="請依照上方名單順序填寫持有張數")
     
     st.divider()
     st.caption(f"系統版本: {VERSION}")
 
-# --- 數據同步與預警 ---
+# --- 數據同步 ---
 today = datetime.date.today()
 warning_window = today + datetime.timedelta(days=3)
 current_list = [x.strip() for x in my_stocks.split(",") if x.strip()]
-p_data = []
-broken_list = []
-earnings_warning_list = []
+shares_list = [float(s.strip()) for s in shares_input.split(",")]
 
-with st.spinner('📡 正在同步法說會日期與價格防禦線...'):
-    for t in current_list:
+p_data = []
+total_annual_dividend = 0
+
+with st.spinner('📡 正在同步法說會、股價與配息預算...'):
+    for idx, t in enumerate(current_list):
         data = get_tech_data(t)
         if data and not data.get("is_error"):
+            # 計算該標的年預計配息
+            shares = shares_list[idx] if idx < len(shares_list) else 0
+            # 計算公式：配息金額 * 頻率 * 1000股 * 張數
+            annual_div = data['div'] * data['multiplier'] * 1000 * shares
+            total_annual_dividend += annual_div
+            data['my_shares'] = shares
             p_data.append(data)
-            # 1. 破線檢查
-            if data['price'] < data['ma20']:
-                broken_list.append(f"• {data['name']} ({data['code']})")
-            
-            # 2. 法說會預警檢查 (新增安全判斷)
-            if data.get('event_date') is not None:
-                # 確保轉換為 date 物件進行比較
-                try:
-                    evt_date = data['event_date'].date() if hasattr(data['event_date'], 'date') else data['event_date']
-                    if today <= evt_date <= warning_window:
-                        earnings_warning_list.append(f"• {data['name']} ({data['code']}): {evt_date.strftime('%m/%d')} 震盪預警")
-                except: pass
 
-# --- 顯示表格 ---
-st.subheader("🛡️ 持股防禦、配息與大震盪預警")
+# --- 顯示現金流概況 ---
+st.markdown(f"""
+<div class="dividend-box">
+    <h3 style="margin:0; color:#238636;">💰 年度預計配息總額：NT$ {total_annual_dividend:,.0f}</h3>
+    <p style="margin:0; color:#8b949e;">基於當前持股張數與最新配息資訊計算 (未含除權息手續費與稅務)</p>
+</div>
+""", unsafe_allow_html=True)
+
+# --- 顯示防禦表格 ---
+st.subheader("🛡️ 持股防禦與大震盪預警")
 if p_data:
     display_list = []
+    broken_list = []
     for d in p_data:
         evt_str = "待公布"
         status = "✅ 安全"
-        
         if d.get('event_date') is not None:
             try:
-                evt_date = d['event_date'].date() if hasattr(d['event_date'], 'date') else d['event_date']
+                evt_date = d['event_date'].date()
                 evt_str = evt_date.strftime('%Y-%m-%d')
-                if today <= evt_date <= warning_window:
-                    status = "🔥 震盪預警"
+                if today <= evt_date <= warning_window: status = "🔥 震盪預警"
             except: pass
-
         if d['price'] < d['ma20']:
             status = f"⚠️ 破線 ({status})" if "預警" in status else "⚠️ 破線"
+            broken_list.append(f"• {d['name']}")
 
         display_list.append({
-            "名稱": d['name'], "代號": d['code'], "現價": f"{d['price']:.2f}", 
-            "配息": f"${d['div']:.2f}", "頻率": d['freq'], "預計法說會": evt_str, "狀態": status
+            "名稱": d['name'], "張數": f"{d['my_shares']:.0f}", "現價": f"{d['price']:.2f}", 
+            "配息": f"${d['div']:.2f}", "頻率": d['freq_name'], "預計法說會": evt_str, "狀態": status
         })
     st.table(pd.DataFrame(display_list))
 
-    # LINE 整合通知
-    if (broken_list or earnings_warning_list) and line_token and line_uid:
+    # LINE 彙整通知 (防 429 邏輯)
+    if broken_list and line_token and line_uid:
         if "last_alert" not in st.session_state:
-            report_lines = [f"【{APP_NAME} 日報】"]
-            if earnings_warning_list:
-                report_lines.append("\n📅 法說大震盪預警：")
-                report_lines.extend(earnings_warning_list)
-            if broken_list:
-                report_lines.append("\n🚨 跌破月線警報：")
-                report_lines.extend(broken_list)
-            
-            report = "\n".join(report_lines)
-            if send_line_push(line_token, line_uid, report) == 200:
-                st.session_state["last_alert"] = report
+            report = f"【{APP_NAME}】偵測到破線警報：\n" + "\n".join(broken_list)
+            send_line_push(line_token, line_uid, report)
+            st.session_state["last_alert"] = report
