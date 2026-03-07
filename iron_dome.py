@@ -6,6 +6,7 @@ import google.genai as genai
 import plotly.graph_objects as go
 import requests
 import feedparser
+import datetime  # 新增時間模組
 from sklearn.linear_model import LinearRegression
 from sklearn.preprocessing import PolynomialFeatures
 
@@ -23,9 +24,9 @@ st.set_page_config(page_title="股票戰情監控中心", layout="wide", page_ic
 
 if AUTOREFRESH_MODE:
     try:
-        st_autorefresh(interval=300000, key="datarefresh")
+        st_autorefresh(interval=300000, key="datarefresh") # 維持 5 分鐘刷新 UI
     except:
-        st.sidebar.warning("⚠️ 自動刷新組件異常，請手動刷新。")
+        st.sidebar.warning("⚠️ 自動刷新組件異常。")
 
 # 🎨 UI 美化
 st.markdown("""
@@ -55,37 +56,32 @@ def get_name(t, stock_info=None):
 # 📡 核心分析函數
 # ==========================================
 def send_line_push(token, uid, msg):
-    """將警報推送到指揮官的手機"""
-    if not token or not uid or token == "" or uid == "": 
-        return None
+    if not token or not uid or token == "" or uid == "": return None
     url = "https://api.line.me/v2/bot/message/push"
     headers = {"Content-Type": "application/json", "Authorization": f"Bearer {token}"}
     payload = {"to": uid, "messages": [{"type": "text", "text": msg}]}
     try: 
-        res = requests.post(url, headers=headers, json=payload, timeout=5)
+        res = requests.post(url, headers=headers, json=payload, timeout=8)
         return res.status_code
-    except: 
-        return 500
+    except: return 500
 
 def get_tech_data(ticker):
     t = ticker.strip().upper()
     if not t: return None
     symbol = f"{t}.TW" if (t.isdigit() or "A" in t) else t
     if t == "GC=F": symbol = "GC=F"
-    
     try:
         stock = yf.Ticker(symbol)
         hist = stock.history(period="6mo")
         if hist.empty and ".TW" in symbol:
             symbol = symbol.replace(".TW", ".TWO")
-            stock = yf.Ticker(symbol)
+            stock = yf.Ticker(symbol_two := symbol)
             hist = stock.history(period="6mo")
-            
         if hist.empty: return None
         
         div_data = stock.dividends
         last_div = div_data.iloc[-1] if not div_data.empty else 0
-        last_div_date = div_data.index[-1].strftime('%Y-%m-%d') if not div_data.empty else "無數據"
+        last_div_date = div_data.index[-1].strftime('%m-%d') if not div_data.empty else "N/A"
         
         close = hist['Close']
         ma20 = close.rolling(20).mean().iloc[-1]
@@ -100,56 +96,64 @@ def get_tech_data(ticker):
 # ==========================================
 # 🏰 戰情室介面
 # ==========================================
-st.title("🏛️ 股票戰情監控中心 (通訊強化版)")
+st.title("🏛️ 股票戰情監控中心 (每日定時簡報版)")
 
 with st.sidebar:
     st.header("📈 戰情設定")
-    if st.button("🔄 立即刷新戰情"): st.rerun()
-    st.divider()
+    # 💥 新增：每日通知小時設定 (預設 15 點，收盤後)
+    alert_hour = st.slider("每日通知小時 (24H 格式)", 0, 23, 15)
     
-    # 重新接回 LINE 設定線路
-    sec_gemini = st.secrets.get("GEMINI_API_KEY", "")
-    sec_line_t = st.secrets.get("LINE_CHANNEL_ACCESS_TOKEN", "")
-    sec_line_u = st.secrets.get("LINE_USER_ID", "")
-
-    api_key = st.text_input("Gemini API Key", value=sec_gemini, type="password")
-    line_token = st.text_input("LINE Token", value=sec_line_t, type="password")
-    line_uid = st.text_input("Your User ID", value=sec_line_u)
-
-    if st.button("🔔 測試 LINE 通訊"):
-        if line_token and line_uid:
-            res_code = send_line_push(line_token, line_uid, "🚀 戰情中心測試：通訊頻道已建立！")
-            if res_code == 200: st.success("發送成功！")
-            else: st.error(f"發送失敗，代碼: {res_code}")
-        else:
-            st.warning("請先輸入 LINE Token 與 UID")
+    st.divider()
+    line_token = st.text_input("LINE Token", value=st.secrets.get("LINE_CHANNEL_ACCESS_TOKEN", ""), type="password")
+    line_uid = st.text_input("Your User ID", value=st.secrets.get("LINE_USER_ID", ""))
+    
+    if st.button("🔄 手動刷新 UI"): st.rerun()
 
     st.divider()
     PERMANENT_LIST = "0052, 00981A, 2330, 006208, 4958, 4420, 00919, 009816, 0056, 6683, 1717, 00929"
     my_stocks = st.text_area("📋 監控清單", PERMANENT_LIST, height=150)
 
-# --- 1. 持股防禦與配息監控 (LINE 觸發邏輯在此) ---
-st.subheader("🛡️ 持股防禦與配息公告")
+# --- 1. 數據分析與定時報警 ---
+now = datetime.datetime.now()
+current_date = now.strftime("%Y-%m-%d")
+
 current_list = [x.strip() for x in my_stocks.split(",") if x.strip()]
 p_data = [get_tech_data(t) for t in current_list if get_tech_data(t)]
 
 if p_data:
     defense_rows = []
+    broken_list = [] # 儲存破線名單
+    
     for d in p_data:
         status = "✅ 安全"
         if d['price'] < d['ma20']:
-            status = "⚠️ 破線危險"
-            # 💥 LINE 警報自動發送邏輯
-            if line_token and line_uid:
-                send_line_push(line_token, line_uid, f"🚨 戰情警報：您的持股 {d['name']} ({d['code']}) 目前價格 {d['price']:.2f} 已跌破月線 {d['ma20']:.2f}！")
+            status = "⚠️ 破線"
+            broken_list.append(f"• {d['name']} ({d['code']}): 現價 {d['price']:.2f} < 月線 {d['ma20']:.2f}")
         
         defense_rows.append({
             "名稱": d['name'], "代號": d['code'], "現價": f"{d['price']:.2f}", 
-            "最新配息": f"${d['div']:.2f}", "除息日期": d['div_date'],
-            "殖利率": f"{(d['div']/d['price']*100):.2f}%" if d['div'] > 0 else "N/A",
-            "狀態": status
+            "配息": f"${d['div']:.2f}", "狀態": status
         })
+    
     st.table(pd.DataFrame(defense_rows))
+    
+    # 💥 核心邏輯：每日定時發送 (僅在設定的小時內，且今天還沒發過時發送)
+    if broken_list and line_token and line_uid:
+        if now.hour == alert_hour:
+            # 使用 session_state 來確保「當前連線中」今天只發一次
+            if "last_send_date" not in st.session_state or st.session_state["last_send_date"] != current_date:
+                report = f"🚨 {current_date} 戰情中心破線日報：\n" + "\n".join(broken_list)
+                res = send_line_push(line_token, line_uid, report)
+                if res == 200:
+                    st.session_state["last_send_date"] = current_date
+                    st.sidebar.success(f"✅ 今日戰報已於 {now.strftime('%H:%M')} 送出")
+                else:
+                    st.sidebar.error(f"❌ 發送失敗，代碼: {res}")
+        else:
+            st.sidebar.info(f"⏳ 預計通知時間：{alert_hour}:00 (目前 {now.strftime('%H:%M')})")
+
+else:
+    st.warning("🔄 數據更新中...")
 
 # --- 2. 趨勢預測 ---
 st.divider()
@@ -165,7 +169,6 @@ if all_codes:
             model = LinearRegression().fit(X, y)
             future_y = model.predict(np.array([[len(y)], [len(y)+1], [len(y)+2]]))
             fig = go.Figure()
-            fig.add_trace(go.Scatter(y=y, name="實際價格", line=dict(color='#3b82f6', width=3)))
+            fig.add_trace(go.Scatter(y=y, name="實際價格", line=dict(color='#3b82f6')))
             fig.add_trace(go.Scatter(x=[len(y)-1, len(y), len(y)+1], y=[y[-1]]+list(future_y), name="預測趨勢", line=dict(color='#ff00ff', dash='dash')))
-            fig.update_layout(template="plotly_dark", height=400)
             st.plotly_chart(fig, use_container_width=True)
