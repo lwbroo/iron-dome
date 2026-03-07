@@ -1,11 +1,12 @@
 streamlit
 yfinance
 FinMind
+tqdm
+requests
 pandas
 numpy
 google-genai
 feedparser
-requests
 scikit-learn
 plotly
 streamlit-autorefresh
