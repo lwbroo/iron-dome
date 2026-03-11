@@ -18,7 +18,7 @@ except ImportError:
 # ==========================================
 # ⚙️ 系統設定 & 版本控制
 # ==========================================
-VERSION = "v8.0.2"
+VERSION = "v8.0.3"
 APP_NAME = "股票戰情監控中心"
 
 st.set_page_config(page_title=APP_NAME, layout="wide", page_icon="📈")
@@ -51,7 +51,6 @@ STOCK_NAMES = {
 def get_tech_data(ticker):
     t = ticker.strip().upper()
     if not t: return None
-    # 🕵️ 指標特殊處理，確保夜盤資料不失聯
     symbol_list = [t] if (t.startswith("^") or t in ["TSM", "GC=F"]) else [f"{t}.TW", f"{t}.TWO", t]
     hist, stock_obj = None, None
     for symbol in symbol_list:
@@ -83,11 +82,19 @@ def get_ai_analysis(api_key, market_summary):
     if not api_key: return "⚠️ 請在側邊欄輸入 API Key 以啟動 AI 參謀。"
     try:
         genai.configure(api_key=api_key)
-        model = genai.GenerativeModel('gemini-1.5-flash')
-        prompt = f"你是操盤參謀GiGi。Kurt持有1152股台積電(2330)，目標5千萬。分析：{market_summary}。請給專業幽默的建議。"
+        # 💥 修正點：改用更穩定的模型名稱，並增加異常處理
+        model = genai.GenerativeModel('gemini-1.5-flash-latest')
+        prompt = f"你是操盤參謀GiGi。指揮官Kurt持有1152股台積電(2330)，目標5千萬退休金。今日市場數據：{market_summary}。請給出專業、幽默且精確的戰略建議，並點評台積電與夜盤ADR的關係。"
         response = model.generate_content(prompt)
         return response.text
-    except Exception as e: return f"❌ AI 異常: {str(e)}"
+    except Exception as e:
+        # 如果 flash-latest 也失敗，嘗試 fallback 到 gemini-1.5-flash
+        try:
+            model = genai.GenerativeModel('gemini-1.5-flash')
+            response = model.generate_content(prompt)
+            return response.text
+        except:
+            return f"❌ AI 腦部掃描失敗 (Error 404): 模型名稱或 API 版本不匹配。請檢查 API Key 權限或更新函式庫版本。具體錯誤: {str(e)}"
 
 # ==========================================
 # 🏰 戰情室介面
@@ -117,7 +124,7 @@ with st.spinner('📡 數據同步中...'):
             shares = shares_list[idx] if idx < len(shares_list) else 0
             total_div += (data['div'] * data['multiplier'] * 1000 * shares)
             p_data.append(data)
-            summary_text += f"{data['name']}: {data['price']:.2f}, "
+            summary_text += f"{data['name']}: {data['price']:.2f}({data['chg']:+.2f}%), "
 
 # --- UI 渲染 ---
 st.markdown(f'<div class="dividend-box"><h3 style="margin:0; color:#238636;">💰 年度預計配息總額：NT$ {total_div:,.0f}</h3></div>', unsafe_allow_html=True)
@@ -128,16 +135,20 @@ if p_data:
     for d in p_data:
         status = "✅ 安全" if d['price'] >= d['ma20'] else "⚠️ 破線"
         df_rows.append({
-            "名稱 (代號)": f"{d['name']} ({d['code']})", "張數": f"{shares_list[current_list.index(d['code'])]:.3f}",
-            "現價": f"{d['price']:.2f}", "漲跌幅": f"{d['chg']:+.2f}%", "月線": f"{d['ma20']:.2f}", "狀態": status
+            "名稱 (代號)": f"{d['name']} ({d['code']})", 
+            "張數": f"{shares_list[current_list.index(d['code'])]:.3f}",
+            "現價": f"{d['price']:.2f}", 
+            "漲跌幅": f"{d['chg']:+.2f}%", 
+            "月線": f"{d['ma20']:.2f}", 
+            "狀態": status
         })
     st.table(pd.DataFrame(df_rows))
 
-# --- 📈 趨勢分析功能 ---
+# --- 📈 趨勢分析 ---
 st.divider()
-st.subheader("🔮 趨勢路徑預測")
+st.subheader("🔮 趨勢路測 (先行指標)")
 col_sel, col_algo, col_days = st.columns([1, 1, 1])
-target = col_sel.selectbox("選擇標的", [d['code'] for d in p_data], index=1)
+target = col_sel.selectbox("選擇分析標的", [d['code'] for d in p_data], index=1)
 algo_type = col_algo.radio("預測模式", ["線性趨勢", "多項式轉折"])
 lookback = col_days.slider("參考天數", 10, 60, 20)
 if st.button("執行演算法"):
@@ -157,7 +168,7 @@ if st.button("執行演算法"):
     fig.add_trace(go.Scatter(x=[len(y)-1, len(y), len(y)+1], y=[y[-1]]+list(future_y), name="預測", line=dict(color='#ff00ff', dash='dash')))
     st.plotly_chart(fig, use_container_width=True)
 
-# --- 📰 指揮官要求的 News & Comment ---
+# --- 📰 News & AI ---
 st.divider()
 st.subheader("🧠 AI 參謀戰略評論")
 if st.button("🪄 生成 AI 深度分析"):
@@ -167,7 +178,7 @@ st.divider()
 st.subheader("📰 市場即時戰訊")
 st.info("""
 **今日關鍵焦點：**
-- **台積電強勢回歸**：TSM ADR 溢價帶動，2330 成功守穩月線並發動 V 轉。
-- **高息股填息戰**：00919 宣佈配息創新高，吸引買盤低檔承接。
-- **美債避險降溫**：市場情緒轉向風險資產，債券標的進入橫盤防守。
+- **台積電 (2330) V 轉成功**：收盤價 1,940 元站穩重要支撐。
+- **夜盤指標 (TSM)**：美股盤前表現將決定明日開盤動能，目前處於溢價回穩狀態。
+- **除息行情預熱**：高息 ETF (00919, 00929) 資金回流，關注除息前夕買盤。
 """)
