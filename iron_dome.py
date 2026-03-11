@@ -18,7 +18,7 @@ except ImportError:
 # ==========================================
 # ⚙️ 系統設定 & 版本控制
 # ==========================================
-VERSION = "v8.0.3"
+VERSION = "v8.0.4"
 APP_NAME = "股票戰情監控中心"
 
 st.set_page_config(page_title=APP_NAME, layout="wide", page_icon="📈")
@@ -29,10 +29,9 @@ st.markdown(f"""
     .stApp {{ background-color: #0d1117; color: #c9d1d9; }}
     .dividend-box {{ background-color: #1e2327; padding: 20px; border-radius: 10px; border-left: 5px solid #238636; margin: 10px 0; }}
     .ai-box {{ background-color: #161b22; padding: 20px; border-radius: 10px; border: 1px solid #58a6ff; margin-top: 10px; }}
-    .news-box {{ background-color: #1c2128; padding: 15px; border-radius: 10px; border: 1px solid #30363d; }}
+    .news-box {{ background-color: #1c2128; padding: 15px; border-radius: 10px; border: 1px solid #30363d; margin-top: 20px; }}
     h3 {{ color: #58a6ff; }}
     .stButton button {{ width: 100%; background-color: #238636; color: white; height: 50px; font-weight: bold; border-radius: 8px; border: none; }}
-    /* 💥 指揮官要求：版本號顯示於左下角 */
     .version-footer {{ position: fixed; bottom: 10px; left: 10px; font-size: 11px; color: #8b949e; z-index: 999; background: rgba(13,17,23,0.8); padding: 2px 5px; border-radius: 3px; }}
 </style>
 """, unsafe_allow_html=True)
@@ -78,23 +77,17 @@ def get_tech_data(ticker):
     }
 
 def get_ai_analysis(api_key, market_summary):
-    if not AI_AVAILABLE: return "⚠️ 請在 requirements.txt 加入 google-generativeai"
+    if not AI_AVAILABLE: return "⚠️ 系統組件遺失：請先在 requirements.txt 加入 google-generativeai"
     if not api_key: return "⚠️ 請在側邊欄輸入 API Key 以啟動 AI 參謀。"
     try:
         genai.configure(api_key=api_key)
-        # 💥 修正點：改用更穩定的模型名稱，並增加異常處理
-        model = genai.GenerativeModel('gemini-1.5-flash-latest')
-        prompt = f"你是操盤參謀GiGi。指揮官Kurt持有1152股台積電(2330)，目標5千萬退休金。今日市場數據：{market_summary}。請給出專業、幽默且精確的戰略建議，並點評台積電與夜盤ADR的關係。"
+        # 💥 修復點：使用最標準的 model 名稱避免 404
+        model = genai.GenerativeModel('gemini-1.5-flash')
+        prompt = f"你是操盤參謀GiGi。指揮官Kurt持有1152股台積電(2330)，目標5千萬退休金。數據：{market_summary}。請給專業幽默的戰略建議。"
         response = model.generate_content(prompt)
         return response.text
     except Exception as e:
-        # 如果 flash-latest 也失敗，嘗試 fallback 到 gemini-1.5-flash
-        try:
-            model = genai.GenerativeModel('gemini-1.5-flash')
-            response = model.generate_content(prompt)
-            return response.text
-        except:
-            return f"❌ AI 腦部掃描失敗 (Error 404): 模型名稱或 API 版本不匹配。請檢查 API Key 權限或更新函式庫版本。具體錯誤: {str(e)}"
+        return f"❌ AI 協議同步失敗: {str(e)}"
 
 # ==========================================
 # 🏰 戰情室介面
@@ -144,9 +137,9 @@ if p_data:
         })
     st.table(pd.DataFrame(df_rows))
 
-# --- 📈 趨勢分析 ---
+# --- 📈 趨勢分析圖表 ---
 st.divider()
-st.subheader("🔮 趨勢路測 (先行指標)")
+st.subheader("🔮 趨勢路徑預測")
 col_sel, col_algo, col_days = st.columns([1, 1, 1])
 target = col_sel.selectbox("選擇分析標的", [d['code'] for d in p_data], index=1)
 algo_type = col_algo.radio("預測模式", ["線性趨勢", "多項式轉折"])
@@ -165,7 +158,7 @@ if st.button("執行演算法"):
         future_y = model.predict(pf.transform(future_X))
     fig = go.Figure()
     fig.add_trace(go.Scatter(y=y, name="實際價格", line=dict(color='#3b82f6')))
-    fig.add_trace(go.Scatter(x=[len(y)-1, len(y), len(y)+1], y=[y[-1]]+list(future_y), name="預測", line=dict(color='#ff00ff', dash='dash')))
+    fig.add_trace(go.Scatter(x=[len(y)-1, len(y), len(y)+1], y=[y[-1]]+list(future_y), name="預測趨勢", line=dict(color='#ff00ff', dash='dash')))
     st.plotly_chart(fig, use_container_width=True)
 
 # --- 📰 News & AI ---
@@ -178,7 +171,7 @@ st.divider()
 st.subheader("📰 市場即時戰訊")
 st.info("""
 **今日關鍵焦點：**
-- **台積電 (2330) V 轉成功**：收盤價 1,940 元站穩重要支撐。
-- **夜盤指標 (TSM)**：美股盤前表現將決定明日開盤動能，目前處於溢價回穩狀態。
-- **除息行情預熱**：高息 ETF (00919, 00929) 資金回流，關注除息前夕買盤。
+- **台積電 (2330) V 轉確認**：收盤價 1,940 元成功收復所有短均線，多頭結構重組。
+- **先行指標 (TSM)**：美股盤前溢價狀況良好，夜盤動向將指引明日開盤強度。
+- **高息股買氣回籠**：00919、00929 在除息前夕展現強韌支撐力道。
 """)
