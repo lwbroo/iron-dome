@@ -1,12 +1,7 @@
 streamlit
 yfinance
-FinMind
-tqdm
-requests
+google-generativeai
+plotly
+scikit-learn
 pandas
 numpy
-google-genai
-feedparser
-scikit-learn
-plotly
-streamlit-autorefresh
