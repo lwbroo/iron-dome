@@ -1,6 +1,6 @@
 streamlit
 yfinance
-google-generativeai
+google-generativeai>=0.7.2
 plotly
 scikit-learn
 pandas
